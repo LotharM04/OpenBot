@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { reservePort } from "../../tests/support/reserved-port";
 import { createApp } from "../src/app";
 import { withPersonBrowsers } from "../src/browser/host";
+import { ownComputerToken } from "../src/computer/computer-token";
 import { withPolicyPushOnWake } from "../src/computer/policy-network";
 import { createComputerProvider } from "../src/computer/provider";
 import { loadConfig } from "../src/config";
@@ -1357,6 +1358,46 @@ test("a computer list that never answers holds back the next check for a minute,
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("a person's computer is asked with its own token, never the deployment's", async () => {
+  const sent: (string | null)[] = [];
+  const check = createComputerCheck({
+    provider: {
+      list: async () => [
+        {
+          key: { kind: "person", personId: "dev-local-user" },
+          status: "running",
+          url: "http://person.local",
+        },
+      ],
+      tokenFor: (key, deploymentToken) =>
+        ownComputerToken(deploymentToken, key),
+    },
+    controls: () => ({
+      policyForBot: async () => ({ mode: "allow_all", rules: [] }),
+    }),
+    token: "deployment-token",
+    fetchImpl: Object.assign(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const token =
+          new Headers(init?.headers).get("x-openbot-computer-token") ?? null;
+        sent.push(token);
+        if (token === "deployment-token")
+          return new Response(null, { status: 401 });
+        return String(url).endsWith("/computers")
+          ? Response.json({ computers: [{ botId: "one" }] })
+          : new Response(null, { status: 204 });
+      },
+      { preconnect() {} },
+    ),
+  });
+  expect(await check()).toBe("ready");
+  const own = ownComputerToken("deployment-token", {
+    kind: "person",
+    personId: "dev-local-user",
+  });
+  expect(sent).toEqual([own, own]);
 });
 
 /** OpenBot Desktop's configuration: the personal edition, one person, nobody signing in. */
