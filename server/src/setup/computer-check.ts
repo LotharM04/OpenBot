@@ -1,3 +1,4 @@
+import { computerTokenOf } from "../computer/computer-token";
 import {
   botsOn,
   type EgressPolicy,
@@ -29,7 +30,7 @@ export const RELEASE_AFTER_MS = 60_000;
 
 export function createComputerCheck(input: {
   provider?: Pick<ComputerProvider, "list"> &
-    Partial<Pick<ComputerProvider, "isolation">>;
+    Partial<Pick<ComputerProvider, "isolation" | "tokenFor">>;
   controls: () =>
     | { policyForBot: (botId: string) => Promise<EgressPolicy> }
     | undefined;
@@ -65,15 +66,23 @@ export function createComputerCheck(input: {
     if (!controls) return "not_checked";
     for (const computer of running) {
       if (!computer.url) continue;
+      // Each computer is sent its own token, never the deployment's to one that holds its own
+      // (computer/computer-token.ts): a person's computer refuses the deployment's, and a Bot that is
+      // root there could read it.
+      const token = computerTokenOf(input.provider, computer.key, input.token);
+      const fetchImpl = input.fetchImpl ?? fetch;
       const bots = await bounded(
-        botsOn(computer, {
-          ...(input.token ? { token: input.token } : {}),
-          fetchImpl: input.fetchImpl ?? fetch,
-        }),
+        botsOn(computer, { ...(token ? { token } : {}), fetchImpl }),
       );
       for (const botId of bots) {
         const policy = await bounded(controls.policyForBot(botId));
-        await bounded(pushEgressPolicy(computer.url, botId, policy, input));
+        await bounded(
+          pushEgressPolicy(computer.url, botId, policy, {
+            ...(token ? { token } : {}),
+            ...(input.webBotAuth ? { webBotAuth: input.webBotAuth } : {}),
+            fetchImpl,
+          }),
+        );
       }
     }
     return "ready";
